@@ -1,0 +1,29 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.egg-info/
+dist/
+build/
+
+# Virtual environment
+.venv/
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+Thumbs.db
+Desktop.ini
+.DS_Store
+
+# Streamlit
+.streamlit/secrets.toml
+
+# Banka dosyaları (kişisel veri)
+*.csv
+*.xls
+*.xlsx
+*.html
+ŞUBAT TOPLU/
