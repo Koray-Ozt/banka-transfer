@@ -1,0 +1,10 @@
+{
+  "firma_girdisi": "",
+  "dinamik_firma_kelimeleri": [],
+  "maks_gun_farki": 3,
+  "otomatik_onay_aktif": false,
+  "otomatik_onay_esigi": 95,
+  "toplu_onay_esigi": 90,
+  "kullanici_haric_kelimeleri": [],
+  "banka_hesap_kodlari": {}
+}
