@@ -223,6 +223,6 @@ def veriyi_standartlastir(df_raw, dosya_adi):
         haric_regex = "|".join(re.escape(k) for k in tum_haric_kelimeler)
         st_df.loc[st_df["AÇIKLAMA"].astype(str).str.upper().str.contains(haric_regex, regex=True, na=False), "VIRMAN_ADAYI"] = False
 
-    ticari_regex = r"(ALT[Iİ]N|ALTI|ALTN).{0,5}(AL[Iİ]M|BEDEL[Iİ])|AL[Iİ]M.{0,5}BEDEL[Iİ]|ELDEN.{0,5}TESL[Iİ]M|TESL[Iİ]M.{0,5}ALD[Iİ]M"
+    ticari_regex = r"(?:ALT[Iİ]N|ALTI|ALTN).{0,5}(?:AL[Iİ]M|BEDEL[Iİ])|AL[Iİ]M.{0,5}BEDEL[Iİ]|ELDEN.{0,5}TESL[Iİ]M|TESL[Iİ]M.{0,5}ALD[Iİ]M"
     st_df.loc[st_df["AÇIKLAMA"].astype(str).str.upper().str.contains(ticari_regex, regex=True, na=False), "VIRMAN_ADAYI"] = False
     return st_df.reset_index(drop=True)

@@ -6,6 +6,7 @@ import pandas as pd
 
 
 KELIME_DESENI = re.compile(r"[A-ZĞÜŞİÖÇ0-9]{3,}")
+SAYISAL_TOKEN_DESENI = re.compile(r"\b\d{6,}\b")
 
 
 def banka_bul(metin):
@@ -123,6 +124,7 @@ def virman_puanla_ve_bul(df, sirket_kelimeleri, maks_gun):
         "A.Ş",
     }
     adaylar_df["KELIMELER"] = adaylar_df["ACIKLAMA_UPPER"].apply(lambda a: {w for w in KELIME_DESENI.findall(a) if w not in jenerikler})
+    adaylar_df["SAYISAL_TOKENLER"] = adaylar_df["ACIKLAMA_UPPER"].apply(lambda a: set(SAYISAL_TOKEN_DESENI.findall(a)))
     adaylar_df["ACIKLAMA_BANKALARI"] = adaylar_df["AÇIKLAMA"].apply(banka_bul)
 
     grup = adaylar_df.groupby("MUTLAK_TUTAR_KURUS")
@@ -142,6 +144,7 @@ def virman_puanla_ve_bul(df, sirket_kelimeleri, maks_gun):
         eksiler = data[data["TUTAR"] < 0]
         if artilar.empty or eksiler.empty:
             continue
+        yogun_grup = (len(artilar) * len(eksiler)) >= 400
 
         for i, arti in artilar.iterrows():
             kelimeler_gelen = arti["KELIMELER"]
@@ -172,8 +175,14 @@ def virman_puanla_ve_bul(df, sirket_kelimeleri, maks_gun):
 
                 giden_gercek_banka = dosya_bankalari.get(eksi["KAYNAK"])
                 giden_aciklama_bankalari = eksi["ACIKLAMA_BANKALARI"]
+                gelen_sayisal_tokenler = arti["SAYISAL_TOKENLER"]
+                giden_sayisal_tokenler = eksi["SAYISAL_TOKENLER"]
                 puan = 0
                 nedenler = []
+                has_banka_teyidi = False
+                has_firma_ibaresi = False
+                has_sayisal_teyit = False
+                ortak_sayi = 0
 
                 gun_skor = _gun_skoru(gun_farki_gercek)
                 puan += round(gun_skor)
@@ -214,22 +223,51 @@ def virman_puanla_ve_bul(df, sirket_kelimeleri, maks_gun):
                 if gelen_gercek_banka and gelen_gercek_banka in giden_aciklama_bankalari:
                     puan += 30
                     nedenler.append("Banka Teyidi")
+                    has_banka_teyidi = True
                 if giden_gercek_banka and giden_gercek_banka in gelen_aciklama_bankalari:
                     puan += 30
                     nedenler.append("Banka Teyidi")
+                    has_banka_teyidi = True
 
                 aciklama_birlesik = (str(arti["AÇIKLAMA"]) + " " + str(eksi["AÇIKLAMA"])).upper()
                 if any(k in aciklama_birlesik for k in kesin_virman_kelimeleri):
                     puan += 40
                     nedenler.append("Firma İbaresi")
+                    has_firma_ibaresi = True
+
+                ortak_sayisal = gelen_sayisal_tokenler.intersection(giden_sayisal_tokenler)
+                if ortak_sayisal:
+                    puan += 35
+                    nedenler.append("Sayısal Referans Eşleşmesi")
+                    has_sayisal_teyit = True
+                elif gelen_sayisal_tokenler and giden_sayisal_tokenler:
+                    puan -= 20
+                    nedenler.append("Sayısal No Uyuşmaz")
 
                 kelimeler_giden = eksi["KELIMELER"]
                 ortak_kelimeler = kelimeler_giden.intersection(kelimeler_gelen)
                 if ortak_kelimeler:
-                    puan += 30
-                    nedenler.append("Ortak Terim")
+                    ortak_sayi = len(ortak_kelimeler)
+                    if ortak_sayi >= 3:
+                        puan += 25
+                    elif ortak_sayi == 2:
+                        puan += 18
+                    else:
+                        puan += 10
+                    nedenler.append(f"Ortak Terim ({ortak_sayi})")
 
-                if puan >= 55:
+                min_puan = 55
+                if yogun_grup:
+                    min_puan = 65
+                    if not (has_banka_teyidi or has_firma_ibaresi or has_sayisal_teyit):
+                        # Yoğun tutarlı gruplarda, aynı gün ve metin benzerliği güçlü ise
+                        # eşiği sınırlı şekilde düşürerek kaçan eşleşmeleri geri kazan.
+                        if gun_farki_gercek == 0 and ortak_sayi >= 3:
+                            min_puan = 65
+                        else:
+                            min_puan = 72
+
+                if puan >= min_puan:
                     tum_eslesmeler.append(
                         {
                             "Olasılık": min(puan, 100),
@@ -296,5 +334,21 @@ def virman_puanla_ve_bul(df, sirket_kelimeleri, maks_gun):
             for midx in match_idxs:
                 tum_eslesmeler[midx]["banka_cifti_adet"] = adet
 
-    tum_eslesmeler.sort(key=lambda x: x["Olasılık"], reverse=True)
-    return tum_eslesmeler
+    # Çoklu kombinasyon içeren tutarlarda kartesyen şişmeyi azaltmak için,
+    # her giden ve gelen kayıt için en yüksek 3 adayı tutuyoruz.
+    giden_sayac = {}
+    gelen_sayac = {}
+    filtreli = []
+    for m in sorted(tum_eslesmeler, key=lambda x: x["Olasılık"], reverse=True):
+        g_key = (m["Tutar"], m["giden_index"])
+        c_key = (m["Tutar"], m["silinecek_index"])
+        if giden_sayac.get(g_key, 0) >= 3:
+            continue
+        if gelen_sayac.get(c_key, 0) >= 3:
+            continue
+        filtreli.append(m)
+        giden_sayac[g_key] = giden_sayac.get(g_key, 0) + 1
+        gelen_sayac[c_key] = gelen_sayac.get(c_key, 0) + 1
+
+    filtreli.sort(key=lambda x: x["Olasılık"], reverse=True)
+    return filtreli
