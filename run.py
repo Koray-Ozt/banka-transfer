@@ -2,6 +2,7 @@ import streamlit as st
 import streamlit.components.v1 as components
 import pandas as pd
 import numpy as np
+import os
 import io
 import re
 import csv
@@ -116,6 +117,7 @@ if 'otomatik_onay_esigi' not in st.session_state: st.session_state.otomatik_onay
 if 'toplu_onay_esigi' not in st.session_state: st.session_state.toplu_onay_esigi = 90
 if 'kullanici_haric_kelimeleri' not in st.session_state: st.session_state.kullanici_haric_kelimeleri = []
 if 'otomatik_islenen_sayisi' not in st.session_state: st.session_state.otomatik_islenen_sayisi = 0
+if 'banka_hesap_kodlari' not in st.session_state: st.session_state.banka_hesap_kodlari = {}
 
 # ==========================================
 # JAVASCRIPT: KLAVYE KISAYOLLARI (1, 2, 3, W, A, D)
@@ -159,7 +161,7 @@ if (!doc.getElementById('keyboard_shortcuts_injected')) {
 # ==========================================
 st.markdown("### ⚙️ Ayarlar & Yapılandırma")
 
-ayarlar_tab, profil_tab = st.tabs(["🔧 İşlem Parametreleri", "🎯 Akıllı Filtreler"])
+ayarlar_tab, profil_tab, hesap_tab = st.tabs(["🔧 İşlem Parametreleri", "🎯 Akıllı Filtreler", "🏦 Banka Hesap Kodları"])
 
 with ayarlar_tab:
     with st.form("ayarlar_formu"):
@@ -230,60 +232,79 @@ with profil_tab:
         st.session_state.kullanici_haric_kelimeleri = [k.strip().upper() for k in yeni_haric_kelime_girdisi.split(',') if len(k.strip()) > 2]
         st.success("✅ Kara liste başarıyla güncellendi!")
 
+with hesap_tab:
+    st.markdown("**Banka Hesap Kodları Tanımlama**")
+    st.markdown("Her banka için muhasebe hesap kodunu tanımlayın. LUCA çıktısında açıklamanın sonuna eklenecektir.")
+    tum_bankalar = ['TEB', 'GARANTİ', 'ZİRAAT', 'HALKBANK', 'VAKIFBANK', 'AKBANK',
+                    'YAPI KREDİ', 'İŞ BANKASI', 'QNB', 'DENİZBANK', 'KUVEYT TÜRK',
+                    'ALBARAKA', 'ODEA', 'FİBABANKA', 'ŞEKERBANK', 'ING', 'PAPARA']
+    with st.form("hesap_kodlari_formu"):
+        hesap_kodlari_yeni = {}
+        hesap_kolonlari = st.columns(3)
+        for idx, banka_adi in enumerate(tum_bankalar):
+            with hesap_kolonlari[idx % 3]:
+                kod = st.text_input(
+                    f"{banka_adi}",
+                    value=st.session_state.banka_hesap_kodlari.get(banka_adi, ''),
+                    placeholder="Örn: 102.01.002",
+                    key=f"hesap_kod_{banka_adi}"
+                )
+                if kod.strip():
+                    hesap_kodlari_yeni[banka_adi] = kod.strip()
+        hesap_kaydet = st.form_submit_button("💾 Hesap Kodlarını Kaydet", use_container_width=True)
+    if hesap_kaydet:
+        st.session_state.banka_hesap_kodlari = hesap_kodlari_yeni
+        st.success(f"✅ {len(hesap_kodlari_yeni)} banka hesap kodu başarıyla kaydedildi!")
+
 st.markdown("---")
 
 # ==========================================
-# 4. SIFIR VERİ KAYBI VE OKUMA MOTORU
+# 4. CSV OKUMA MOTORU
 # ==========================================
+CSV_KLASORU = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'banka csv')
+
 def banka_dosyasi_oku(dosya):
-    veri_bytes = dosya.read()
-    dosya.seek(0)
+    """Dosya yolundan (str) veya UploadedFile nesnesinden CSV okur ve DataFrame döndürür."""
     hata_kayitlari = []
-    dosya_adi = getattr(dosya, 'name', 'Bilinmeyen dosya')
-    uzanti = dosya_adi.lower().rsplit('.', 1)[-1] if '.' in dosya_adi else ''
-    excel_uzantisi = uzanti in {'xls', 'xlsx', 'xlsm', 'xlsb'}
-
-    if excel_uzantisi:
-        excel_engine = 'xlrd' if uzanti == 'xls' else None
+    if isinstance(dosya, str):
+        dosya_adi = os.path.basename(dosya)
         try:
-            df = pd.read_excel(io.BytesIO(veri_bytes), header=None, engine=excel_engine)
-            if len(df.columns) >= 3:
-                return df.fillna('')
-        except ImportError as exc:
-            if uzanti == 'xls':
-                hata_kayitlari.append("Excel okuma başarısız: .xls dosyaları için 'xlrd>=2.0.1' gerekli.")
-            else:
-                hata_kayitlari.append(f"Excel okuma başarısız: {exc}")
+            with open(dosya, 'rb') as f:
+                veri_bytes = f.read()
         except Exception as exc:
-            hata_kayitlari.append(f"Excel okuma başarısız: {exc}")
+            st.session_state.okuma_uyarilari.append(f"{dosya_adi}: Dosya okunamadı: {exc}")
+            return None
+    else:
+        dosya_adi = getattr(dosya, 'name', 'Bilinmeyen dosya')
+        veri_bytes = dosya.read()
+        dosya.seek(0)
 
-        # Excel uzantılı dosya parse edilemediyse ikili içeriği HTML/CSV gibi okumaya zorlamayız.
-        if hata_kayitlari:
-            st.session_state.okuma_uyarilari.append(f"{dosya_adi}: {' | '.join(hata_kayitlari)}")
-        return None
-
-    try:
-        dfs = pd.read_html(io.BytesIO(veri_bytes))
-        if dfs and len(dfs) > 0:
-            dfs.sort(key=lambda x: len(x), reverse=True)
-            return dfs[0].fillna('')
-    except Exception as exc:
-        hata_kayitlari.append(f"HTML okuma başarısız: {exc}")
     metin = ""
-    if CHARSET_NORMALIZER_AVAILABLE:
-        sonuc = detect_encoding(veri_bytes)
-        en_iyi = sonuc.best()
-        if en_iyi is not None:
-            metin = str(en_iyi)
-    if not metin:
-        for enc in ['utf-8', 'cp1254', 'ISO-8859-9']:
-            try:
-                metin = veri_bytes.decode(enc)
-                break
-            except UnicodeDecodeError:
-                continue
+    # Önce UTF-8 dene, başarısız olursa cp1254 (Türkçe standart) kullan
+    try:
+        metin = veri_bytes.decode('utf-8')
+    except UnicodeDecodeError:
+        try:
+            metin = veri_bytes.decode('cp1254')
+        except UnicodeDecodeError:
+            if CHARSET_NORMALIZER_AVAILABLE:
+                sonuc = detect_encoding(veri_bytes)
+                en_iyi = sonuc.best()
+                if en_iyi is not None:
+                    metin = str(en_iyi)
+            if not metin:
+                for enc in ['cp1252', 'ISO-8859-9']:
+                    try:
+                        metin = veri_bytes.decode(enc)
+                        break
+                    except UnicodeDecodeError:
+                        continue
     if not metin:
         metin = veri_bytes.decode('utf-8', errors='ignore')
+
+    # UTF-8 BOM karakterini temizle
+    metin = metin.lstrip('\ufeff')
+
     satirlar = metin.splitlines()
     noktali_virgul = sum(s.count(';') for s in satirlar[:50])
     virgul = sum(s.count(',') for s in satirlar[:50])
@@ -454,17 +475,22 @@ def virman_puanla_ve_bul(df, sirket_kelimeleri, maks_gun):
                     gelen_gercek_banka = dosya_bankalari.get(arti['KAYNAK'])
                     gelen_aciklama_bankalari = arti['ACIKLAMA_BANKALARI']
 
-                    uygun_eksiler = eksiler[(eksiler['TARIH_OBJ'] >= tarih_arti - pd.Timedelta(days=maks_gun)) & (eksiler['TARIH_OBJ'] <= tarih_arti + pd.Timedelta(days=maks_gun))]
+                    # Çıkış (eksi) tarihi, giriş (artı) tarihinden sonra olamaz (para önce çıkar sonra girer)
+                    uygun_eksiler = eksiler[(eksiler['TARIH_OBJ'] >= tarih_arti - pd.Timedelta(days=maks_gun)) & (eksiler['TARIH_OBJ'] <= tarih_arti)]
                     if uygun_eksiler.empty:
                         continue
                     
                     for j, eksi in uygun_eksiler.iterrows():
                         tarih_eksi = eksi['TARIH_OBJ']
-                        gun_farki_gercek = abs((tarih_arti - tarih_eksi).days)
+                        gun_farki_gercek = (tarih_arti - tarih_eksi).days  # Her zaman >= 0
                             
                         dakika_farki_gercek = 0
-                        if (arti['SAAT'] != '00:00' and eksi['SAAT'] != '00:00' and pd.notna(arti['TARIH_SAAT_OBJ']) and pd.notna(eksi['TARIH_SAAT_OBJ'])):
-                            dakika_farki_gercek = abs((arti['TARIH_SAAT_OBJ'] - eksi['TARIH_SAAT_OBJ']).total_seconds() / 60)
+                        saat_bilgisi_var = (arti['SAAT'] != '00:00' and eksi['SAAT'] != '00:00' and pd.notna(arti['TARIH_SAAT_OBJ']) and pd.notna(eksi['TARIH_SAAT_OBJ']))
+                        if saat_bilgisi_var:
+                            zaman_farki = (arti['TARIH_SAAT_OBJ'] - eksi['TARIH_SAAT_OBJ']).total_seconds() / 60
+                            if zaman_farki < 0:
+                                continue  # Çıkış saati girişten sonra, bu eşleşme geçersiz
+                            dakika_farki_gercek = zaman_farki
                                 
                         giden_gercek_banka = dosya_bankalari.get(eksi['KAYNAK'])
                         giden_aciklama_bankalari = eksi['ACIKLAMA_BANKALARI']
@@ -472,7 +498,7 @@ def virman_puanla_ve_bul(df, sirket_kelimeleri, maks_gun):
                         
                         if gun_farki_gercek == 0: 
                             puan += 35
-                            if (arti['SAAT'] != '00:00' and eksi['SAAT'] != '00:00' and pd.notna(arti['TARIH_SAAT_OBJ']) and pd.notna(eksi['TARIH_SAAT_OBJ'])):
+                            if saat_bilgisi_var:
                                 if 0 <= dakika_farki_gercek <= 15:
                                     puan += 30; nedenler.append(f"Saat Eşleşmesi (<15 Dk)")
                                 elif 15 < dakika_farki_gercek <= 60:
@@ -510,10 +536,54 @@ def virman_puanla_ve_bul(df, sirket_kelimeleri, maks_gun):
                                 'Giden_Aciklama': eksi['AÇIKLAMA'], 'Gelen_Aciklama': arti['AÇIKLAMA'],
                                 'Giden_Tarih': f"{eksi['TARİH']} {eksi['SAAT'] if eksi['SAAT'] != '00:00' else ''}",
                                 'Gelen_Tarih': f"{arti['TARİH']} {arti['SAAT'] if arti['SAAT'] != '00:00' else ''}",
+                                'Giden_Tarih_Obj': eksi['TARIH_SAAT_OBJ'] if pd.notna(eksi.get('TARIH_SAAT_OBJ')) else tarih_eksi,
+                                'Gelen_Tarih_Obj': arti['TARIH_SAAT_OBJ'] if pd.notna(arti.get('TARIH_SAAT_OBJ')) else tarih_arti,
                                 'Giden_Tutar': eksi['TUTAR'], 'Gelen_Tutar': arti['TUTAR'],
-                                'Nedeni': " + ".join(nedenler), 'silinecek_index': i, 'giden_index': j
+                                'Nedeni': " + ".join(nedenler), 'silinecek_index': i, 'giden_index': j,
+                                'banka_cifti_adet': 1
                             })
                             
+    # --- KRONOLOJİK SIRALAMA BONUSU (Banka Çifti Tespiti) ---
+    # Aynı tutar + aynı banka çifti olan grupları tespit et, kronolojik eşleşmelere bonus ver
+    banka_cifti_gruplari = {}
+    for idx, m in enumerate(tum_eslesmeler):
+        key = (m['Tutar'], m['Giden_Banka'], m['Gelen_Banka'])
+        if key not in banka_cifti_gruplari:
+            banka_cifti_gruplari[key] = []
+        banka_cifti_gruplari[key].append(idx)
+
+    for key, match_idxs in banka_cifti_gruplari.items():
+        giden_dict = {}
+        gelen_dict = {}
+        for midx in match_idxs:
+            m = tum_eslesmeler[midx]
+            g = m['giden_index']
+            c = m['silinecek_index']
+            if g not in giden_dict:
+                giden_dict[g] = m['Giden_Tarih_Obj']
+            if c not in gelen_dict:
+                gelen_dict[c] = m['Gelen_Tarih_Obj']
+
+        adet = min(len(giden_dict), len(gelen_dict))
+
+        if adet >= 2:
+            giden_sorted = sorted(giden_dict.keys(), key=lambda x: giden_dict[x] if pd.notna(giden_dict[x]) else pd.Timestamp.max)
+            gelen_sorted = sorted(gelen_dict.keys(), key=lambda x: gelen_dict[x] if pd.notna(gelen_dict[x]) else pd.Timestamp.max)
+
+            krono_ciftler = set()
+            for rank in range(adet):
+                krono_ciftler.add((giden_sorted[rank], gelen_sorted[rank]))
+
+            for midx in match_idxs:
+                m = tum_eslesmeler[midx]
+                m['banka_cifti_adet'] = adet
+                if (m['giden_index'], m['silinecek_index']) in krono_ciftler:
+                    m['Olasılık'] = min(m['Olasılık'] + 15, 100)
+                    m['Nedeni'] += " + Kronolojik Sıra"
+        else:
+            for midx in match_idxs:
+                tum_eslesmeler[midx]['banka_cifti_adet'] = adet
+
     # Bütün olası eşleşmeleri puana göre dizip listeyi döndürüyoruz (Filtreleme işlemi UI tarafında dinamik yapılacak)
     tum_eslesmeler.sort(key=lambda x: x['Olasılık'], reverse=True)
     return tum_eslesmeler
@@ -569,6 +639,44 @@ def toplu_onayla_ayni_tutar(hedef_tutar, min_olasilik):
         adet += 1
     return adet
 
+def toplu_onayla_banka_cifti(hedef_tutar, giden_banka, gelen_banka, min_olasilik):
+    """Aynı tutar ve banka çifti için kronolojik sırayla toplu onay."""
+    gecmisi_kaydet()
+    adet = 0
+    hedef = round(float(hedef_tutar), 2)
+
+    adaylar = []
+    for aday in st.session_state.tum_eslesmeler:
+        g = aday['giden_index']
+        c = aday['silinecek_index']
+        if not aday_islenebilir_mi(g, c):
+            continue
+        if round(float(aday.get('Tutar', 0)), 2) != hedef:
+            continue
+        if aday.get('Giden_Banka', '') != giden_banka or aday.get('Gelen_Banka', '') != gelen_banka:
+            continue
+        if aday.get('Olasılık', 0) < min_olasilik:
+            continue
+        adaylar.append(aday)
+
+    # Kronolojik sıraya göre sırala (çıkış zamanına göre)
+    adaylar.sort(key=lambda x: x.get('Giden_Tarih_Obj', pd.NaT) if pd.notna(x.get('Giden_Tarih_Obj')) else pd.Timestamp.max)
+
+    # Greedy kronolojik eşleştirme: ilk çıkış → ilk giriş, ikinci çıkış → ikinci giriş...
+    kullanilan_giden = set()
+    kullanilan_gelen = set()
+    for aday in adaylar:
+        g = aday['giden_index']
+        c = aday['silinecek_index']
+        if g in kullanilan_giden or c in kullanilan_gelen:
+            continue
+        onayli_cifti_isaretle(g, c)
+        kullanilan_giden.add(g)
+        kullanilan_gelen.add(c)
+        adet += 1
+
+    return adet
+
 def aksiyon_al(aksiyon_tipi, giden_idx, gelen_idx, kaydet_gecmis=True):
     if kaydet_gecmis:
         gecmisi_kaydet()
@@ -598,36 +706,64 @@ def geri_al():
 # 7. ANA EKRAN VE SONUÇLAR
 # ==========================================
 st.markdown("### 📁 Veri Yükle ve Analiz Et")
-st.markdown("CSV, XLS, XLSX formatında banka ekstrelerini yükleyip analizi başlatın.")
 
-yuklenen_dosyalar = st.file_uploader(
-    "İşlenecek Ekstreleri Yükleyin",
-    type=["csv", "xls", "xlsx"],
-    accept_multiple_files=True,
-    help="Desteklenen formatlar: .csv, .xls, .xlsx | Birden fazla dosya seçebilirsiniz."
-)
+yukleme_tab, klasor_tab = st.tabs(["📤 Dosya Yükle", "📂 Klasörden Oku"])
 
-if yuklenen_dosyalar:
-    st.markdown(f"**📦 {len(yuklenen_dosyalar)} dosya seçildi**")
-    for f in yuklenen_dosyalar:
-        st.caption(f"✓ {f.name} ({f.size/1024:.1f} KB)")
+with yukleme_tab:
+    st.markdown("CSV formatında banka ekstrelerini yükleyip analizi başlatın.")
+    yuklenen_dosyalar = st.file_uploader(
+        "İşlenecek Ekstreleri Yükleyin",
+        type=["csv"],
+        accept_multiple_files=True,
+        help="Desteklenen format: .csv | Birden fazla dosya seçebilirsiniz."
+    )
+    if yuklenen_dosyalar:
+        st.markdown(f"**📦 {len(yuklenen_dosyalar)} dosya seçildi**")
+        for f in yuklenen_dosyalar:
+            st.caption(f"✓ {f.name} ({f.size/1024:.1f} KB)")
+
+with klasor_tab:
+    st.markdown("`banka csv` klasöründeki CSV dosyalarını otomatik tarayıp analiz edin.")
+    csv_dosyalari = []
+    if os.path.isdir(CSV_KLASORU):
+        csv_dosyalari = sorted([f for f in os.listdir(CSV_KLASORU) if f.lower().endswith('.csv')])
+    if csv_dosyalari:
+        st.markdown(f"**📦 `banka csv` klasöründe {len(csv_dosyalari)} dosya bulundu**")
+        for f in csv_dosyalari:
+            boyut = os.path.getsize(os.path.join(CSV_KLASORU, f)) / 1024
+            st.caption(f"✓ {f} ({boyut:.1f} KB)")
+    else:
+        st.info("⚠️ `banka csv` klasöründe CSV dosyası bulunamadı.")
+
+# Hangi kaynaktan dosya gelecek belirleme
+aktif_dosyalar = yuklenen_dosyalar if yuklenen_dosyalar else None
+aktif_kaynak = 'upload' if yuklenen_dosyalar else ('folder' if csv_dosyalari else None)
 
 col_btn1, col_btn2, col_btn3 = st.columns([1, 2, 1])
 with col_btn2:
-    baslat_btn = st.button("🚀 Analizi Başlat", type="primary", use_container_width=True)
+    baslat_btn = st.button("🚀 Analizi Başlat", type="primary", use_container_width=True, disabled=(aktif_kaynak is None))
 
-if baslat_btn and yuklenen_dosyalar:
+if baslat_btn and aktif_kaynak:
     standart_veriler = []
     raw_files_dict = {}
     st.session_state.okuma_uyarilari = []
     st.session_state.otomatik_islenen_sayisi = 0
     with st.spinner("Dosyalar işleniyor, veri havuzu oluşturuluyor..."):
-        for dosya in yuklenen_dosyalar:
-            df_raw = banka_dosyasi_oku(dosya)
-            if df_raw is not None:
-                raw_files_dict[dosya.name] = df_raw
-                st_df = veriyi_standartlastir(df_raw, dosya.name)
-                if not st_df.empty: standart_veriler.append(st_df)
+        if aktif_kaynak == 'upload':
+            for dosya in aktif_dosyalar:
+                df_raw = banka_dosyasi_oku(dosya)
+                if df_raw is not None:
+                    raw_files_dict[dosya.name] = df_raw
+                    st_df = veriyi_standartlastir(df_raw, dosya.name)
+                    if not st_df.empty: standart_veriler.append(st_df)
+        else:
+            for dosya_adi in csv_dosyalari:
+                dosya_yolu = os.path.join(CSV_KLASORU, dosya_adi)
+                df_raw = banka_dosyasi_oku(dosya_yolu)
+                if df_raw is not None:
+                    raw_files_dict[dosya_adi] = df_raw
+                    st_df = veriyi_standartlastir(df_raw, dosya_adi)
+                    if not st_df.empty: standart_veriler.append(st_df)
 
         if standart_veriler:
             st.session_state.raw_files = raw_files_dict
@@ -643,14 +779,12 @@ if baslat_btn and yuklenen_dosyalar:
             st.session_state.analiz_yapildi = True
         else:
             st.session_state.analiz_yapildi = False
-            st.error("📄 Yüklenen dosyalardan analiz edilebilir standart veri çıkarılamadı. Dosya biçimlerini ve kodlamalarını lütfen kontrol edin.")
+            st.error("📄 CSV dosyalarından analiz edilebilir standart veri çıkarılamadı. Dosya biçimlerini ve kodlamalarını lütfen kontrol edin.")
 
     if st.session_state.okuma_uyarilari:
         with st.expander(f"⚠️ Okuma Uyarıları ({len(st.session_state.okuma_uyarilari)})", expanded=False):
             for uyari in st.session_state.okuma_uyarilari:
                 st.warning(f"⚠️ {uyari}")
-elif baslat_btn and not yuklenen_dosyalar:
-    st.error("📄 Lütfen analizi başlatmadan önce en az bir ekstre dosyası yüklediğinizden eğlenin.")
 
 if st.session_state.analiz_yapildi:
     # --- DİNAMİK HAVUZ SORGUSU ---
@@ -742,7 +876,24 @@ if st.session_state.analiz_yapildi:
         st.markdown("### 📥 Mükerrer İşlemler Çıkarılmış LUCA Dosyaları")
         st.markdown("📑 Aşağıdaki dosyaları muhasebe sisteminize aktarabilirsiniz. Reddedilen ve silinen işlemler kaldırılmıştır.")
         
-        temiz_df = st.session_state.ham_veriler.drop(index=st.session_state.onaylanan_silinecekler).reset_index(drop=True)
+        # Onaylı virman çiftlerinde çıkış işlemine giriş bankasının hesap kodunu ekle
+        giden_hesap_kodu_map = {}
+        if st.session_state.banka_hesap_kodlari:
+            for aday in st.session_state.tum_eslesmeler:
+                g_idx = aday['giden_index']
+                c_idx = aday['silinecek_index']
+                if g_idx in st.session_state.islenen_gidenler and c_idx in st.session_state.islenen_gelenler:
+                    gelen_kaynak = st.session_state.ham_veriler.iloc[c_idx]['KAYNAK']
+                    gelen_bankalari = banka_bul(gelen_kaynak)
+                    gelen_banka_adi = gelen_bankalari[0] if gelen_bankalari else None
+                    if gelen_banka_adi and gelen_banka_adi in st.session_state.banka_hesap_kodlari:
+                        giden_hesap_kodu_map[g_idx] = st.session_state.banka_hesap_kodlari[gelen_banka_adi]
+
+        temiz_df = st.session_state.ham_veriler.drop(index=st.session_state.onaylanan_silinecekler).copy()
+        for idx, hesap_kodu in giden_hesap_kodu_map.items():
+            if idx in temiz_df.index:
+                temiz_df.at[idx, 'AÇIKLAMA'] = str(temiz_df.at[idx, 'AÇIKLAMA']) + ' - ' + hesap_kodu
+        temiz_df = temiz_df.reset_index(drop=True)
         banka_gruplari = temiz_df.groupby('KAYNAK')
         buton_kolonlari = st.columns(3)
         sayac = 0
@@ -843,6 +994,36 @@ if st.session_state.analiz_yapildi:
                 st.success(f"Toplu işlem tamamlandı: {toplu_adet} eşleşme onaylandı.")
                 st.rerun()
         
+        # --- BANKA ÇİFTİ KRONOLOJİK TOPLU ONAY ---
+        banka_cifti_adet = aday.get('banka_cifti_adet', 1)
+        if banka_cifti_adet >= 2:
+            giden_ids = set()
+            gelen_ids = set()
+            for a in kalan_adaylar:
+                if (round(float(a.get('Tutar', 0)), 2) == round(float(aday['Tutar']), 2) and 
+                    a.get('Giden_Banka') == aday['Giden_Banka'] and 
+                    a.get('Gelen_Banka') == aday['Gelen_Banka']):
+                    giden_ids.add(a['giden_index'])
+                    gelen_ids.add(a['silinecek_index'])
+            aktif_cift = min(len(giden_ids), len(gelen_ids))
+            if aktif_cift >= 2:
+                st.markdown(f"""
+                <div class='auto-banner' style='background:rgba(59,130,246,0.1); border-color:rgba(59,130,246,0.3); color:#93c5fd;'>
+                    <strong>🔗 Banka Çifti Tespiti</strong> — <strong>{html_module.escape(str(aday['Giden_Banka']))}</strong> → <strong>{html_module.escape(str(aday['Gelen_Banka']))}</strong> arasında
+                    aynı tutarda ({aday['Tutar']:,.2f} ₺) <strong>{aktif_cift}</strong> adet eşleşme bulundu.
+                    Kronolojik sıraya göre toplu onay yapabilirsiniz.
+                </div>
+                """, unsafe_allow_html=True)
+                banka_cifti_btn = st.button(
+                    f"🔗 {aday['Giden_Banka']} → {aday['Gelen_Banka']} ({aktif_cift}×{aday['Tutar']:,.2f} ₺) Kronolojik Toplu Onayla",
+                    use_container_width=True,
+                    help=f"Bu banka çifti arasındaki {aktif_cift} adet {aday['Tutar']:,.2f} ₺ tutarındaki eşleşmeleri çıkış zamanına göre otomatik eşleştirir."
+                )
+                if banka_cifti_btn:
+                    cift_adet = toplu_onayla_banka_cifti(aday['Tutar'], aday['Giden_Banka'], aday['Gelen_Banka'], st.session_state.toplu_onay_esigi)
+                    st.success(f"Banka çifti toplu onay: {cift_adet} eşleşme kronolojik sırayla onaylandı.")
+                    st.rerun()
+
         # --- HAVUZ YÖNETİMİ AKSİYONLARI ---
         r_col1, r_col2, r_col3 = st.columns(3)
         with r_col1: st.button("🚫 Çıkış Virman Değil (1)", use_container_width=True, help="Çıkış çöpe atılır, Giriş havuza döner.", on_click=aksiyon_al, args=('GIDEN_DEGIL', g_idx, c_idx))
